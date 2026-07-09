@@ -1,4 +1,17 @@
+declare module 'ws' {
+  export class WebSocket {
+    constructor(...args: any[]);
+    [key: string]: any;
+  }
+
+  export class WebSocketServer {
+    constructor(...args: any[]);
+    [key: string]: any;
+  }
+}
+
 import { createServer } from 'http';
+// @ts-ignore: ambient ws module is declared above for type support
 import { WebSocketServer, WebSocket } from 'ws';
 import {
   ulawDecodeBase64,
@@ -96,9 +109,11 @@ async function textToSpeechPcm8k(text: string, voice: string = 'tongtong', speed
 async function saveCallLog(session: CallSession, status: string) {
   const duration = Math.floor((Date.now() - session.callStartTime) / 1000);
   const transcript = JSON.stringify(
-    session.conversationHistory.filter(m => m.role !== 'assistant' || m.role === 'user').map(m => ({
-      role: m.role, content: m.content
-    }))
+    session.conversationHistory
+      .filter(m => m.role === 'user' || m.role === 'assistant')
+      .map(m => ({
+        role: m.role, content: m.content
+      }))
   );
 
   try {
