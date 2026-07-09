@@ -6,9 +6,10 @@ import AgentBuilder from '@/components/voice-agent/AgentBuilder';
 import LiveCall from '@/components/voice-agent/LiveCall';
 import ContactsManager from '@/components/voice-agent/ContactsManager';
 import CallLogs from '@/components/voice-agent/CallLogs';
+import PhoneSetup from '@/components/voice-agent/PhoneSetup';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Badge } from '@/components/ui/badge';
-import { Bot, Phone, Users, History, Headphones, Zap } from 'lucide-react';
+import { Bot, Phone, Users, History, Headphones, Zap, Settings2 } from 'lucide-react';
 import { motion } from 'framer-motion';
 
 export default function VoiceAgentApp() {
@@ -157,12 +158,13 @@ export default function VoiceAgentApp() {
       {/* Main content */}
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6">
         <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-6">
-          <TabsList className="grid w-full grid-cols-4 bg-muted/50 p-1 h-auto">
+          <TabsList className="grid w-full grid-cols-5 bg-muted/50 p-1 h-auto">
             {[
               { value: 'live', label: 'Live Call', icon: Phone, count: null, highlight: true },
               { value: 'agents', label: 'Agents', icon: Bot, count: agents.length },
               { value: 'contacts', label: 'Contacts', icon: Users, count: contacts.length },
               { value: 'logs', label: 'History', icon: History, count: callLogs.length },
+              { value: 'phone', label: 'Phone Setup', icon: Settings2, count: null },
             ].map(tab => (
               <TabsTrigger
                 key={tab.value}
@@ -207,6 +209,10 @@ export default function VoiceAgentApp() {
 
           <TabsContent value="logs" className="mt-2">
             <CallLogs callLogs={callLogs} />
+          </TabsContent>
+
+          <TabsContent value="phone" className="mt-2">
+            <PhoneSetup />
           </TabsContent>
         </Tabs>
       </main>

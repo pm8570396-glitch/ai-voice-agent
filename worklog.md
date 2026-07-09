@@ -46,3 +46,24 @@ Stage Summary:
 - AI acts like a receptionist: asks for name, purpose, provides info, transfers
 - Say "bye" to end call automatically
 - Full call transcripts saved with every session
+
+---
+Task ID: 3
+Agent: Main Agent
+Task: Add Twilio phone integration for real phone calls
+
+Work Log:
+- Created μ-law audio codec utilities (ulaw.ts) for telephony audio format conversion
+- Built Twilio Media Streams WebSocket service (port 3004) with silence detection and continuous voice loop
+- Created Twilio webhook API routes (/api/twilio/voice, /api/twilio/status) that return TwiML
+- Built comprehensive Phone Setup guide component with 3 sub-tabs (Quick Start, Twilio Setup, Deploy)
+- Added Phone Setup as 5th tab in main navigation
+- Audio pipeline: Twilio μ-law 8kHz → PCM 16-bit → WAV → ASR → LLM → TTS → WAV → PCM → resample 24k→8k → μ-law → Twilio
+- Implemented silence-based voice activity detection (RMS energy threshold)
+- Browser-verified all tabs, webhook URLs display, copy buttons, and service status
+
+Stage Summary:
+- Full Twilio integration ready: sign up → get number → deploy → configure webhook → receive calls
+- WebSocket service handles real-time bidirectional audio streaming
+- Phone Setup tab provides step-by-step deployment guide (Vercel/Railway/ngrok)
+- Cost: ~$0.01/min for real phone calls, free trial with $15 credit
