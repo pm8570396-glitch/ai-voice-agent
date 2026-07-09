@@ -1,0 +1,80 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  name      String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Post {
+  id        String   @id @default(cuid())
+  title     String
+  content   String?
+  published Boolean  @default(false)
+  authorId  String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model VoiceAgent {
+  id          String   @id @default(cuid())
+  name        String
+  description String?
+  companyName String?
+  companyDesc String?
+  greeting    String
+  voice       String   @default("tongtong")
+  speed       Float    @default(1.0)
+  tone        String   @default("professional") // professional, friendly, formal
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  scripts    AgentScript[]
+  callLogs   CallLog[]
+}
+
+model AgentScript {
+  id       String   @id @default(cuid())
+  agentId  String
+  title    String
+  content  String
+  order    Int
+  isActive Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  agent VoiceAgent @relation(fields: [agentId], references: [id], onDelete: Cascade)
+}
+
+model Contact {
+  id       String   @id @default(cuid())
+  name     String
+  role     String?
+  phone    String?
+  email    String?
+  department String?
+  isActive Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model CallLog {
+  id        String   @id @default(cuid())
+  agentId   String?
+  duration  Int      @default(0)
+  status    String   @default("completed") // completed, transferred, ended
+  transcript String? // JSON string of conversation
+  createdAt DateTime @default(now())
+
+  agent VoiceAgent? @relation(fields: [agentId], references: [id], onDelete: SetNull)
+}
