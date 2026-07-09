@@ -1,0 +1,697 @@
+     1→'use client';
+     2→
+     3→import { useState, useRef, useEffect, useCallback } from 'react';
+     4→import { VoiceAgent, Contact, ChatMessage } from './types';
+     5→import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+     6→import { Button } from '@/components/ui/button';
+     7→import { Badge } from '@/components/ui/badge';
+     8→import { ScrollArea } from '@/components/ui/scroll-area';
+     9→import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+    10→import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+    11→import { useToast } from '@/hooks/use-toast';
+    12→import {
+    13→  Mic, MicOff, Phone, PhoneOff, PhoneForwarded, Bot, User,
+    14→  Volume2, VolumeX, Loader2, AlertCircle, CheckCircle, Send, Play, Square
+    15→} from 'lucide-react';
+    16→import { motion, AnimatePresence } from 'framer-motion';
+    17→
+    18→interface LiveCallProps {
+    19→  agents: VoiceAgent[];
+    20→  selectedAgentId: string | null;
+    21→  setSelectedAgentId: (id: string | null) => void;
+    22→  contacts: Contact[];
+    23→}
+    24→
+    25→// Generate unique ID
+    26→const uid = () => Math.random().toString(36).substr(2, 9);
+    27→
+    28→export default function LiveCall({ agents, selectedAgentId, setSelectedAgentId, contacts }: LiveCallProps) {
+    29→  const { toast } = useToast();
+    30→
+    31→  // Call state
+    32→  const [isCallActive, setIsCallActive] = useState(false);
+    33→  const [isRecording, setIsRecording] = useState(false);
+    34→  const [isProcessing, setIsProcessing] = useState(false);
+    35→  const [isSpeaking, setIsSpeaking] = useState(false);
+    36→  const [isMuted, setIsMuted] = useState(false);
+    37→  const [callStartTime, setCallStartTime] = useState<number | null>(null);
+    38→  const [callDuration, setCallDuration] = useState(0);
+    39→
+    40→  // Messages
+    41→  const [messages, setMessages] = useState<ChatMessage[]>([]);
+    42→  const [sessionId, setSessionId] = useState('');
+    43→
+    44→  // Transfer dialog
+    45→  const [showTransferDialog, setShowTransferDialog] = useState(false);
+    46→  const [transferContactId, setTransferContactId] = useState('');
+    47→  const [wantsTransfer, setWantsTransfer] = useState(false);
+    48→
+    49→  // Refs
+    50→  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+    51→  const audioChunksRef = useRef<Blob[]>([]);
+    52→  const audioContextRef = useRef<AudioContext | null>(null);
+    53→  const streamRef = useRef<MediaStream | null>(null);
+    54→  const messagesEndRef = useRef<HTMLDivElement>(null);
+    55→  const currentAudioRef = useRef<HTMLAudioElement | null>(null);
+    56→  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+    57→
+    58→  const activeAgent = agents.find(a => a.id === selectedAgentId);
+    59→
+    60→  // Auto-scroll messages
+    61→  useEffect(() => {
+    62→    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    63→  }, [messages]);
+    64→
+    65→  // Call duration timer
+    66→  useEffect(() => {
+    67→    if (isCallActive && callStartTime) {
+    68→      timerRef.current = setInterval(() => {
+    69→        setCallDuration(Math.floor((Date.now() - callStartTime) / 1000));
+    70→      }, 1000);
+    71→    }
+    72→    return () => {
+    73→      if (timerRef.current) clearInterval(timerRef.current);
+    74→    };
+    75→  }, [isCallActive, callStartTime]);
+    76→
+    77→  // Cleanup on unmount
+    78→  useEffect(() => {
+    79→    return () => {
+    80→      stopRecording();
+    81→      stopAllAudio();
+    82→      if (timerRef.current) clearInterval(timerRef.current);
+    83→    };
+    84→  }, []);
+    85→
+    86→  const formatTime = (seconds: number) => {
+    87→    const m = Math.floor(seconds / 60).toString().padStart(2, '0');
+    88→    const s = (seconds % 60).toString().padStart(2, '0');
+    89→    return `${m}:${s}`;
+    90→  };
+    91→
+    92→  const addMessage = useCallback((role: ChatMessage['role'], content: string) => {
+    93→    setMessages(prev => [...prev, { id: uid(), role, content, timestamp: Date.now() }]);
+    94→  }, []);
+    95→
+    96→  const stopAllAudio = () => {
+    97→    if (currentAudioRef.current) {
+    98→      currentAudioRef.current.pause();
+    99→      currentAudioRef.current = null;
+   100→    }
+   101→    setIsSpeaking(false);
+   102→  };
+   103→
+   104→  const playAudioFromBuffer = async (buffer: ArrayBuffer) => {
+   105→    stopAllAudio();
+   106→    try {
+   107→      if (!audioContextRef.current) {
+   108→        audioContextRef.current = new AudioContext({ sampleRate: 24000 });
+   109→      }
+   110→      const audioContext = audioContextRef.current;
+   111→      const audioBuffer = await audioContext.decodeAudioData(buffer);
+   112→      const source = audioContext.createBufferSource();
+   113→      source.buffer = audioBuffer;
+   114→      source.connect(audioContext.destination);
+   115→
+   116→      setIsSpeaking(true);
+   117→      source.onended = () => {
+   118→        setIsSpeaking(false);
+   119→        currentAudioRef.current = null;
+   120→      };
+   121→
+   122→      source.start(0);
+   123→
+   124→      // Also create an HTML audio element for control
+   125→      const blob = new Blob([buffer], { type: 'audio/wav' });
+   126→      const url = URL.createObjectURL(blob);
+   127→      const audio = new Audio(url);
+   128→      currentAudioRef.current = audio;
+   129→      audio.onended = () => {
+   130→        setIsSpeaking(false);
+   131→        URL.revokeObjectURL(url);
+   132→      };
+   133→    } catch (err) {
+   134→      console.error('Audio playback error:', err);
+   135→      setIsSpeaking(false);
+   136→    }
+   137→  };
+   138→
+   139→  const textToSpeech = async (text: string, voice: string, speed: number) => {
+   140→    try {
+   141→      const res = await fetch('/api/voice/tts', {
+   142→        method: 'POST',
+   143→        headers: { 'Content-Type': 'application/json' },
+   144→        body: JSON.stringify({ text, voice, speed }),
+   145→      });
+   146→
+   147→      if (!res.ok) {
+   148→        const err = await res.json();
+   149→        throw new Error(err.error || 'TTS failed');
+   150→      }
+   151→
+   152→      const buffer = await res.arrayBuffer();
+   153→      await playAudioFromBuffer(buffer);
+   154→    } catch (err) {
+   155→      console.error('TTS error:', err);
+   156→      toast({ title: 'Voice Error', description: 'Could not generate speech', variant: 'destructive' });
+   157→    }
+   158→  };
+   159→
+   160→  const processAudio = async (audioBlob: Blob) => {
+   161→    setIsProcessing(true);
+   162→    try {
+   163→      // Convert to base64
+   164→      const reader = new FileReader();
+   165→      const base64Promise = new Promise<string>((resolve) => {
+   166→        reader.onload = () => {
+   167→          const base64 = (reader.result as string).split(',')[1];
+   168→          resolve(base64);
+   169→        };
+   170→        reader.readAsDataURL(audioBlob);
+   171→      });
+   172→      const base64Audio = await base64Promise;
+   173→
+   174→      // ASR
+   175→      const asrRes = await fetch('/api/voice/asr', {
+   176→        method: 'POST',
+   177→        headers: { 'Content-Type': 'application/json' },
+   178→        body: JSON.stringify({ audio: base64Audio }),
+   179→      });
+   180→
+   181→      if (!asrRes.ok) throw new Error('ASR failed');
+   182→      const asrData = await asrRes.json();
+   183→
+   184→      if (!asrData.text || asrData.text.trim().length === 0) {
+   185→        setIsProcessing(false);
+   186→        return;
+   187→      }
+   188→
+   189→      const userText = asrData.text.trim();
+   190→      addMessage('user', userText);
+   191→
+   192→      // LLM Chat
+   193→      const chatRes = await fetch('/api/voice/chat', {
+   194→        method: 'POST',
+   195→        headers: { 'Content-Type': 'application/json' },
+   196→        body: JSON.stringify({
+   197→          message: userText,
+   198→          agentId: selectedAgentId,
+   199→          sessionId,
+   200→        }),
+   201→      });
+   202→
+   203→      if (!chatRes.ok) throw new Error('Chat failed');
+   204→      const chatData = await chatRes.json();
+   205→
+   206→      addMessage('assistant', chatData.response);
+   207→
+   208→      // TTS
+   209→      await textToSpeech(chatData.response, activeAgent?.voice || 'tongtong', activeAgent?.speed || 1.0);
+   210→
+   211→      // Check transfer intent
+   212→      if (chatData.wantsTransfer && contacts.length > 0) {
+   213→        setWantsTransfer(true);
+   214→      }
+   215→    } catch (err) {
+   216→      console.error('Processing error:', err);
+   217→      addMessage('system', 'Sorry, there was an error processing your voice. Please try again.');
+   218→    } finally {
+   219→      setIsProcessing(false);
+   220→    }
+   221→  };
+   222→
+   223→  const startRecording = async () => {
+   224→    try {
+   225→      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+   226→      streamRef.current = stream;
+   227→      const mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm;codecs=opus' });
+   228→      mediaRecorderRef.current = mediaRecorder;
+   229→      audioChunksRef.current = [];
+   230→
+   231→      mediaRecorder.ondataavailable = (event) => {
+   232→        if (event.data.size > 0) {
+   233→          audioChunksRef.current.push(event.data);
+   234→        }
+   235→      };
+   236→
+   237→      mediaRecorder.onstop = async () => {
+   238→        const blob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
+   239→        audioChunksRef.current = [];
+   240→        if (blob.size > 0 && isCallActive) {
+   241→          await processAudio(blob);
+   242→        }
+   243→      };
+   244→
+   245→      mediaRecorder.start();
+   246→      setIsRecording(true);
+   247→    } catch (err) {
+   248→      console.error('Microphone error:', err);
+   249→      toast({
+   250→        title: 'Microphone Access Denied',
+   251→        description: 'Please allow microphone access to use the voice agent.',
+   252→        variant: 'destructive',
+   253→      });
+   254→    }
+   255→  };
+   256→
+   257→  const stopRecording = () => {
+   258→    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+   259→      mediaRecorderRef.current.stop();
+   260→    }
+   261→    if (streamRef.current) {
+   262→      streamRef.current.getTracks().forEach(t => t.stop());
+   263→      streamRef.current = null;
+   264→    }
+   265→    setIsRecording(false);
+   266→  };
+   267→
+   268→  const startCall = async () => {
+   269→    if (!selectedAgentId) {
+   270→      toast({ title: 'No Agent Selected', description: 'Please select a voice agent first', variant: 'destructive' });
+   271→      return;
+   272→    }
+   273→
+   274→    const newSessionId = uid();
+   275→    setSessionId(newSessionId);
+   276→    setMessages([]);
+   277→    setCallStartTime(Date.now());
+   278→    setCallDuration(0);
+   279→    setWantsTransfer(false);
+   280→    setIsCallActive(true);
+   281→
+   282→    addMessage('system', 'Call started');
+   283→
+   284→    // Play greeting
+   285→    if (activeAgent?.greeting) {
+   286→      addMessage('assistant', activeAgent.greeting);
+   287→      await textToSpeech(activeAgent.greeting, activeAgent.voice, activeAgent.speed);
+   288→    }
+   289→
+   290→    // Auto-start listening after greeting
+   291→    if (isCallActive) {
+   292→      startRecording();
+   293→    }
+   294→  };
+   295→
+   296→  const endCall = async () => {
+   297→    stopRecording();
+   298→    stopAllAudio();
+   299→    setIsCallActive(false);
+   300→    if (timerRef.current) clearInterval(timerRef.current);
+   301→
+   302→    // Save call log
+   303→    try {
+   304→      await fetch('/api/calls', {
+   305→        method: 'POST',
+   306→        headers: { 'Content-Type': 'application/json' },
+   307→        body: JSON.stringify({
+   308→          agentId: selectedAgentId,
+   309→          duration: callDuration,
+   310→          status: 'completed',
+   311→          transcript: JSON.stringify(messages),
+   312→        }),
+   313→      });
+   314→    } catch {
+   315→      // Silent fail for logging
+   316→    }
+   317→
+   318→    // Clear chat history on server
+   319→    try {
+   320→      await fetch(`/api/voice/chat?sessionId=${sessionId}`, { method: 'DELETE' });
+   321→    } catch {
+   322→      // Silent fail
+   323→    }
+   324→
+   325→    addMessage('system', `Call ended - Duration: ${formatTime(callDuration)}`);
+   326→
+   327→    // Clear session after short delay
+   328→    setTimeout(() => {
+   329→      setMessages(prev => [...prev.slice(-1)]); // Keep only the last message
+   330→    }, 2000);
+   331→  };
+   332→
+   333→  const toggleMute = () => {
+   334→    if (isMuted) {
+   335→      setIsMuted(false);
+   336→      if (isCallActive && !isProcessing && !isSpeaking) {
+   337→        startRecording();
+   338→      }
+   339→    } else {
+   340→      setIsMuted(true);
+   341→      stopRecording();
+   342→    }
+   343→  };
+   344→
+   345→  const handleTransfer = async () => {
+   346→    if (!transferContactId) return;
+   347→    const contact = contacts.find(c => c.id === transferContactId);
+   348→
+   349→    stopRecording();
+   350→    stopAllAudio();
+   351→
+   352→    const transferMsg = contact
+   353→      ? `Transferring you to ${contact.name}${contact.role ? `, ${contact.role}` : ''}${contact.department ? ` from ${contact.department}` : ''}. Please hold for a moment.`
+   354→      : 'Transferring your call now. Please hold.';
+   355→
+   356→    addMessage('assistant', transferMsg);
+   357→    await textToSpeech(transferMsg, activeAgent?.voice || 'tongtong', activeAgent?.speed || 1.0);
+   358→
+   359→    // Save as transferred call
+   360→    try {
+   361→      await fetch('/api/calls', {
+   362→        method: 'POST',
+   363→        headers: { 'Content-Type': 'application/json' },
+   364→        body: JSON.stringify({
+   365→          agentId: selectedAgentId,
+   366→          duration: callDuration,
+   367→          status: 'transferred',
+   368→          transcript: JSON.stringify(messages),
+   369→        }),
+   370→      });
+   371→    } catch {
+   372→      // Silent fail
+   373→    }
+   374→
+   375→    setShowTransferDialog(false);
+   376→    setWantsTransfer(false);
+   377→    setTransferContactId('');
+   378→
+   379→    toast({
+   380→      title: 'Call Transferred',
+   381→      description: `Transferred to ${contact?.name || 'contact'}`,
+   382→    });
+   383→
+   384→    // End call after transfer
+   385→    setIsCallActive(false);
+   386→    if (timerRef.current) clearInterval(timerRef.current);
+   387→
+   388→    setTimeout(() => {
+   389→      setMessages(prev => [...prev.slice(-1)]);
+   390→    }, 2000);
+   391→  };
+   392→
+   393→  // Auto-resume listening when AI finishes speaking
+   394→  useEffect(() => {
+   395→    if (isCallActive && !isSpeaking && !isProcessing && !isRecording && !isMuted) {
+   396→      const timer = setTimeout(() => {
+   397→        if (isCallActive && !isSpeaking && !isProcessing && !isMuted) {
+   398→          startRecording();
+   399→        }
+   400→      }, 500);
+   401→      return () => clearTimeout(timer);
+   402→    }
+   403→  }, [isSpeaking, isProcessing, isCallActive, isRecording, isMuted]);
+   404→
+   405→  return (
+   406→    <div className="space-y-6">
+   407→      {/* Header */}
+   408→      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+   409→        <div>
+   410→          <h2 className="text-2xl font-bold tracking-tight flex items-center gap-2">
+   411→            <Phone className="h-7 w-7 text-emerald-600" />
+   412→            Live Call
+   413→          </h2>
+   414→          <p className="text-muted-foreground mt-1">Start a voice conversation with your AI call assistant</p>
+   415→        </div>
+   416→        <div className="flex items-center gap-3">
+   417→          {isCallActive && (
+   418→            <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-red-50 text-red-700 border border-red-200">
+   419→              <motion.div
+   420→                className="w-2.5 h-2.5 rounded-full bg-red-500"
+   421→                animate={{ scale: [1, 1.2, 1] }}
+   422→                transition={{ repeat: Infinity, duration: 1.5 }}
+   423→              />
+   424→              <span className="text-sm font-mono font-medium">{formatTime(callDuration)}</span>
+   425→            </div>
+   426→          )}
+   427→        </div>
+   428→      </div>
+   429→
+   430→      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+   431→        {/* Main call area */}
+   432→        <div className="lg:col-span-2 space-y-4">
+   433→          {/* Agent selector */}
+   434→          <Card>
+   435→            <CardContent className="p-4">
+   436→              <div className="flex items-center gap-3">
+   437→                <Label className="text-sm font-medium whitespace-nowrap">Active Agent:</Label>
+   438→                <Select value={selectedAgentId || ''} onValueChange={setSelectedAgentId} disabled={isCallActive}>
+   439→                  <SelectTrigger className="flex-1">
+   440→                    <SelectValue placeholder="Select an agent..." />
+   441→                  </SelectTrigger>
+   442→                  <SelectContent>
+   443→                    {agents.filter(a => a.isActive).map(a => (
+   444→                      <SelectItem key={a.id} value={a.id}>{a.name}{a.companyName ? ` (${a.companyName})` : ''}</SelectItem>
+   445→                    ))}
+   446→                  </SelectContent>
+   447→                </Select>
+   448→                {activeAgent && (
+   449→                  <div className="hidden sm:flex items-center gap-1.5 text-xs text-muted-foreground">
+   450→                    <Badge variant="secondary" className="text-xs">{activeAgent.voice}</Badge>
+   451→                    <Badge variant="outline" className="text-xs">{activeAgent.tone}</Badge>
+   452→                  </div>
+   453→                )}
+   454→              </div>
+   455→            </CardContent>
+   456→          </Card>
+   457→
+   458→          {/* Chat / Transcript */}
+   459→          <Card className="overflow-hidden">
+   460→            <CardHeader className="pb-3">
+   461→              <CardTitle className="text-base flex items-center gap-2">
+   462→                Conversation
+   463→                {isCallActive && <Badge variant="destructive" className="animate-pulse text-xs">LIVE</Badge>}
+   464→              </CardTitle>
+   465→            </CardHeader>
+   466→            <CardContent className="p-0">
+   467→              <ScrollArea className="h-96 px-4 pb-4">
+   468→                <div className="space-y-3 pt-2">
+   469→                  {messages.length === 0 && (
+   470→                    <div className="flex flex-col items-center justify-center py-16 text-center">
+   471→                      <div className="rounded-full bg-muted p-4 mb-3">
+   472→                        <Mic className="h-8 w-8 text-muted-foreground" />
+   473→                      </div>
+   474→                      <p className="text-sm text-muted-foreground">Select an agent and start a call to begin</p>
+   475→                    </div>
+   476→                  )}
+   477→                  <AnimatePresence mode="popLayout">
+   478→                    {messages.map(msg => (
+   479→                      <motion.div
+   480→                        key={msg.id}
+   481→                        initial={{ opacity: 0, y: 10 }}
+   482→                        animate={{ opacity: 1, y: 0 }}
+   483→                        className={`flex gap-3 ${msg.role === 'user' ? 'flex-row-reverse' : ''}`}
+   484→                      >
+   485→                        <div className={`flex-shrink-0 rounded-full p-2 ${msg.role === 'assistant' ? 'bg-emerald-100' : msg.role === 'user' ? 'bg-blue-100' : 'bg-amber-100'}`}>
+   486→                          {msg.role === 'assistant' ? <Bot className="h-4 w-4 text-emerald-700" /> : msg.role === 'user' ? <User className="h-4 w-4 text-blue-700" /> : <AlertCircle className="h-4 w-4 text-amber-700" />}
+   487→                        </div>
+   488→                        <div className={`max-w-[75%] rounded-xl px-4 py-2.5 text-sm ${msg.role === 'assistant' ? 'bg-emerald-50 text-emerald-900 border border-emerald-200' : msg.role === 'user' ? 'bg-blue-50 text-blue-900 border border-blue-200' : 'bg-amber-50 text-amber-800 border border-amber-200 text-center w-full max-w-full'}`}>
+   489→                          {msg.content}
+   490→                        </div>
+   491→                      </motion.div>
+   492→                    ))}
+   493→                  </AnimatePresence>
+   494→
+   495→                  {/* Processing indicator */}
+   496→                  {isProcessing && (
+   497→                    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="flex gap-3">
+   498→                      <div className="flex-shrink-0 rounded-full p-2 bg-emerald-100">
+   499→                        <Loader2 className="h-4 w-4 text-emerald-700 animate-spin" />
+   500→                      </div>
+   501→                      <div className="bg-emerald-50 border border-emerald-200 rounded-xl px-4 py-3">
+   502→                        <div className="flex gap-1.5">
+   503→                          <div className="w-2 h-2 rounded-full bg-emerald-400 animate-bounce" style={{ animationDelay: '0ms' }} />
+   504→                          <div className="w-2 h-2 rounded-full bg-emerald-400 animate-bounce" style={{ animationDelay: '150ms' }} />
+   505→                          <div className="w-2 h-2 rounded-full bg-emerald-400 animate-bounce" style={{ animationDelay: '300ms' }} />
+   506→                        </div>
+   507→                      </div>
+   508→                    </motion.div>
+   509→                  )}
+   510→
+   511→                  {/* Speaking indicator */}
+   512→                  {isSpeaking && (
+   513→                    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="flex gap-3">
+   514→                      <div className="flex-shrink-0 rounded-full p-2 bg-emerald-100">
+   515→                        <Volume2 className="h-4 w-4 text-emerald-700" />
+   516→                      </div>
+   517→                      <div className="bg-emerald-50 border border-emerald-200 rounded-xl px-4 py-3 text-sm text-emerald-700">
+   518→                        Agent is speaking...
+   519→                      </div>
+   520→                    </motion.div>
+   521→                  )}
+   522→
+   523→                  <div ref={messagesEndRef} />
+   524→                </div>
+   525→              </ScrollArea>
+   526→            </CardContent>
+   527→          </Card>
+   528→        </div>
+   529→
+   530→        {/* Controls sidebar */}
+   531→        <div className="space-y-4">
+   532→          {/* Call controls */}
+   533→          <Card>
+   534→            <CardHeader className="pb-3">
+   535→              <CardTitle className="text-base">Controls</CardTitle>
+   536→            </CardHeader>
+   537→            <CardContent className="space-y-4">
+   538→              {!isCallActive ? (
+   539→                <Button
+   540→                  className="w-full bg-emerald-600 hover:bg-emerald-700 gap-2 h-14 text-base"
+   541→                  onClick={startCall}
+   542→                  disabled={!selectedAgentId}
+   543→                >
+   544→                  <Phone className="h-5 w-5" /> Start Call
+   545→                </Button>
+   546→              ) : (
+   547→                <>
+   548→                  <Button
+   549→                    className={`w-full gap-2 h-14 text-base ${isRecording ? 'bg-red-600 hover:bg-red-700' : 'bg-emerald-600 hover:bg-emerald-700'}`}
+   550→                    onClick={isRecording ? stopRecording : startRecording}
+   551→                    disabled={isProcessing || isSpeaking}
+   552→                  >
+   553→                    {isRecording ? <><Square className="h-5 w-5" /> Stop Listening</> : <><Mic className="h-5 w-5" /> Start Listening</>}
+   554→                  </Button>
+   555→
+   556→                  <div className="grid grid-cols-2 gap-2">
+   557→                    <Button
+   558→                      variant="outline"
+   559→                      className="gap-2 h-12"
+   560→                      onClick={toggleMute}
+   561→                    >
+   562→                      {isMuted ? <MicOff className="h-4 w-4" /> : <Volume2 className="h-4 w-4" />}
+   563→                      {isMuted ? 'Unmute' : 'Mute'}
+   564→                    </Button>
+   565→
+   566→                    <Button
+   567→                      variant="outline"
+   568→                      className="gap-2 h-12"
+   569→                      onClick={() => setShowTransferDialog(true)}
+   570→                      disabled={contacts.length === 0}
+   571→                    >
+   572→                      <PhoneForwarded className="h-4 w-4" />
+   573→                      Transfer
+   574→                    </Button>
+   575→                  </div>
+   576→
+   577→                  <Button className="w-full bg-red-600 hover:bg-red-700 gap-2 h-12" onClick={endCall}>
+   578→                    <PhoneOff className="h-5 w-5" /> End Call
+   579→                  </Button>
+   580→                </>
+   581→              )}
+   582→
+   583→              {/* Status indicators */}
+   584→              <div className="space-y-2 pt-2">
+   585→                <div className="flex items-center gap-2 text-sm">
+   586→                  <div className={`w-2 h-2 rounded-full ${isRecording ? 'bg-red-500 animate-pulse' : 'bg-gray-300'}`} />
+   587→                  <span className="text-muted-foreground">Microphone: {isRecording ? 'Active' : 'Off'}</span>
+   588→                </div>
+   589→                <div className="flex items-center gap-2 text-sm">
+   590→                  <div className={`w-2 h-2 rounded-full ${isProcessing ? 'bg-amber-500 animate-pulse' : 'bg-gray-300'}`} />
+   591→                  <span className="text-muted-foreground">Processing: {isProcessing ? 'Active' : 'Idle'}</span>
+   592→                </div>
+   593→                <div className="flex items-center gap-2 text-sm">
+   594→                  <div className={`w-2 h-2 rounded-full ${isSpeaking ? 'bg-emerald-500 animate-pulse' : 'bg-gray-300'}`} />
+   595→                  <span className="text-muted-foreground">Speaking: {isSpeaking ? 'Active' : 'Off'}</span>
+   596→                </div>
+   597→              </div>
+   598→            </CardContent>
+   599→          </Card>
+   600→
+   601→          {/* Transfer suggestion */}
+   602→          {wantsTransfer && contacts.length > 0 && (
+   603→            <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
+   604→              <Card className="border-amber-200 bg-amber-50">
+   605→                <CardContent className="p-4">
+   606→                  <p className="text-sm font-medium text-amber-800 mb-2">Transfer Request Detected</p>
+   607→                  <p className="text-xs text-amber-700 mb-3">The caller may want to be transferred. Would you like to transfer?</p>
+   608→                  <Button size="sm" className="bg-amber-600 hover:bg-amber-700 gap-1.5" onClick={() => setShowTransferDialog(true)}>
+   609→                    <PhoneForwarded className="h-3.5 w-3.5" /> Transfer Call
+   610→                  </Button>
+   611→                </CardContent>
+   612→              </Card>
+   613→            </motion.div>
+   614→          )}
+   615→
+   616→          {/* Quick info */}
+   617→          <Card>
+   618→            <CardHeader className="pb-3">
+   619→              <CardTitle className="text-base">How It Works</CardTitle>
+   620→            </CardHeader>
+   621→            <CardContent>
+   622→              <ol className="space-y-3 text-sm text-muted-foreground">
+   623→                <li className="flex gap-2">
+   624→                  <span className="flex-shrink-0 w-5 h-5 rounded-full bg-emerald-100 text-emerald-700 text-xs flex items-center justify-center font-medium">1</span>
+   625→                  <span>Select a voice agent and start the call</span>
+   626→                </li>
+   627→                <li className="flex gap-2">
+   628→                  <span className="flex-shrink-0 w-5 h-5 rounded-full bg-emerald-100 text-emerald-700 text-xs flex items-center justify-center font-medium">2</span>
+   629→                  <span>Agent plays greeting message automatically</span>
+   630→                </li>
+   631→                <li className="flex gap-2">
+   632→                  <span className="flex-shrink-0 w-5 h-5 rounded-full bg-emerald-100 text-emerald-700 text-xs flex items-center justify-center font-medium">3</span>
+   633→                  <span>Speak into your mic - it auto-records</span>
+   634→                </li>
+   635→                <li className="flex gap-2">
+   636→                  <span className="flex-shrink-0 w-5 h-5 rounded-full bg-emerald-100 text-emerald-700 text-xs flex items-center justify-center font-medium">4</span>
+   637→                  <span>AI transcribes, thinks, and responds with voice</span>
+   638→                </li>
+   639→                <li className="flex gap-2">
+   640→                  <span className="flex-shrink-0 w-5 h-5 rounded-full bg-emerald-100 text-emerald-700 text-xs flex items-center justify-center font-medium">5</span>
+   641→                  <span>Transfer to a contact when needed</span>
+   642→                </li>
+   643→              </ol>
+   644→            </CardContent>
+   645→          </Card>
+   646→        </div>
+   647→      </div>
+   648→
+   649→      {/* Transfer Dialog */}
+   650→      <Dialog open={showTransferDialog} onOpenChange={setShowTransferDialog}>
+   651→        <DialogContent>
+   652→          <DialogHeader>
+   653→            <DialogTitle className="flex items-center gap-2">
+   654→              <PhoneForwarded className="h-5 w-5" /> Transfer Call
+   655→            </DialogTitle>
+   656→            <DialogDescription>Select a contact to transfer the current call to</DialogDescription>
+   657→          </DialogHeader>
+   658→          <div className="space-y-3 py-2">
+   659→            {contacts.filter(c => c.isActive).length === 0 ? (
+   660→              <p className="text-sm text-muted-foreground text-center py-4">No active contacts available. Add contacts in the Contacts tab.</p>
+   661→            ) : (
+   662→              <div className="space-y-2 max-h-64 overflow-y-auto">
+   663→                {contacts.filter(c => c.isActive).map(contact => (
+   664→                  <button
+   665→                    key={contact.id}
+   666→                    className={`w-full text-left p-3 rounded-lg border-2 transition-all ${transferContactId === contact.id ? 'border-emerald-500 bg-emerald-50' : 'border-transparent hover:bg-muted/50'}`}
+   667→                    onClick={() => setTransferContactId(contact.id)}
+   668→                  >
+   669→                    <p className="font-medium">{contact.name}</p>
+   670→                    <div className="flex flex-wrap gap-2 mt-1">
+   671→                      {contact.role && <Badge variant="secondary" className="text-xs">{contact.role}</Badge>}
+   672→                      {contact.department && <Badge variant="outline" className="text-xs">{contact.department}</Badge>}
+   673→                      {contact.phone && <Badge variant="outline" className="text-xs">{contact.phone}</Badge>}
+   674→                    </div>
+   675→                  </button>
+   676→                ))}
+   677→              </div>
+   678→            )}
+   679→          </div>
+   680→          <DialogFooter>
+   681→            <Button variant="outline" onClick={() => setShowTransferDialog(false)}>Cancel</Button>
+   682→            <Button
+   683→              className="bg-emerald-600 hover:bg-emerald-700 gap-2"
+   684→              onClick={handleTransfer}
+   685→              disabled={!transferContactId}
+   686→            >
+   687→              <PhoneForwarded className="h-4 w-4" /> Transfer Now
+   688→            </Button>
+   689→          </DialogFooter>
+   690→        </DialogContent>
+   691→      </Dialog>
+   692→    </div>
+   693→  );
+   694→}
+   695→
+   696→// Need to import Label
+   697→import { Label } from '@/components/ui/label';

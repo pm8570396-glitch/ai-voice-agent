@@ -1,13 +1,12 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { VoiceAgent, Contact, CallLog } from '@/components/voice-agent/types';
 import AgentBuilder from '@/components/voice-agent/AgentBuilder';
 import LiveCall from '@/components/voice-agent/LiveCall';
 import ContactsManager from '@/components/voice-agent/ContactsManager';
 import CallLogs from '@/components/voice-agent/CallLogs';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Bot, Phone, Users, History, Headphones, Zap } from 'lucide-react';
 import { motion } from 'framer-motion';
@@ -17,8 +16,9 @@ export default function VoiceAgentApp() {
   const [contacts, setContacts] = useState<Contact[]>([]);
   const [callLogs, setCallLogs] = useState<CallLog[]>([]);
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState('agents');
+  const [activeTab, setActiveTab] = useState('live');
   const [loading, setLoading] = useState(true);
+  const initialFetchDone = useRef(false);
 
   const fetchData = useCallback(async () => {
     try {
@@ -36,8 +36,9 @@ export default function VoiceAgentApp() {
       setContacts(contactsData);
       setCallLogs(callsData);
 
-      // Auto-select first active agent
-      if (!selectedAgentId) {
+      // Auto-select first active agent on first load
+      if (!initialFetchDone.current) {
+        initialFetchDone.current = true;
         const firstActive = agentsData.find((a: VoiceAgent) => a.isActive);
         if (firstActive) setSelectedAgentId(firstActive.id);
       }
@@ -46,11 +47,10 @@ export default function VoiceAgentApp() {
     } finally {
       setLoading(false);
     }
-  }, [selectedAgentId]);
+  }, []);
 
   useEffect(() => {
     fetchData();
-    // Poll for call logs every 5s
     const interval = setInterval(async () => {
       try {
         const res = await fetch('/api/calls');
@@ -60,14 +60,6 @@ export default function VoiceAgentApp() {
     }, 5000);
     return () => clearInterval(interval);
   }, [fetchData]);
-
-  const refreshCallLogs = useCallback(async () => {
-    try {
-      const res = await fetch('/api/calls');
-      const data = await res.json();
-      setCallLogs(data);
-    } catch { /* silent */ }
-  }, []);
 
   const activeAgentsCount = agents.filter(a => a.isActive).length;
   const totalCalls = callLogs.length;
@@ -92,7 +84,7 @@ export default function VoiceAgentApp() {
               transition={{ repeat: Infinity, duration: 1.5 }}
             />
           </div>
-          <p className="text-sm text-muted-foreground font-medium">Loading Voice Agent...</p>
+          <p className="text-sm text-muted-foreground font-medium">Initializing Call System...</p>
         </motion.div>
       </div>
     );
@@ -112,22 +104,26 @@ export default function VoiceAgentApp() {
                 <h1 className="text-lg font-bold tracking-tight bg-gradient-to-r from-emerald-700 to-teal-700 bg-clip-text text-transparent">
                   VoiceAgent
                 </h1>
-                <p className="text-[10px] text-muted-foreground -mt-0.5 hidden sm:block">AI-Powered Call Assistant</p>
+                <p className="text-[10px] text-muted-foreground -mt-0.5 hidden sm:block">AI Call Answering System</p>
               </div>
             </div>
 
             <div className="flex items-center gap-3">
               <div className="hidden sm:flex items-center gap-2">
                 <Badge variant="secondary" className="gap-1 text-xs">
-                  <Bot className="h-3 w-3" /> {activeAgentsCount} agents
+                  <Bot className="h-3 w-3" /> {activeAgentsCount} agent{activeAgentsCount !== 1 ? 's' : ''}
                 </Badge>
                 <Badge variant="secondary" className="gap-1 text-xs">
-                  <Phone className="h-3 w-3" /> {totalCalls} calls
+                  <Phone className="h-3 w-3" /> {totalCalls} call{totalCalls !== 1 ? 's' : ''}
                 </Badge>
               </div>
-              <div className="flex items-center gap-1.5 text-xs text-emerald-600 font-medium">
-                <Zap className="h-3.5 w-3.5" />
-                <span className="hidden sm:inline">Live</span>
+              <div className="flex items-center gap-1.5 px-2 py-1 rounded-full bg-emerald-50 border border-emerald-200">
+                <motion.div
+                  className="w-2 h-2 rounded-full bg-emerald-500"
+                  animate={{ scale: [1, 1.4, 1] }}
+                  transition={{ repeat: Infinity, duration: 2 }}
+                />
+                <span className="text-[10px] font-semibold text-emerald-700 uppercase tracking-wider">On Duty</span>
               </div>
             </div>
           </div>
@@ -141,7 +137,7 @@ export default function VoiceAgentApp() {
             {[
               { label: 'Active Agents', value: activeAgentsCount, icon: Bot, color: 'text-emerald-600' },
               { label: 'Total Calls', value: totalCalls, icon: Phone, color: 'text-blue-600' },
-              { label: 'Total Duration', value: `${Math.floor(totalDuration / 60)}m ${totalDuration % 60}s`, icon: History, color: 'text-amber-600' },
+              { label: 'Talk Time', value: `${Math.floor(totalDuration / 60)}m ${totalDuration % 60}s`, icon: History, color: 'text-amber-600' },
               { label: 'Transferred', value: transferredCount, icon: Users, color: 'text-purple-600' },
             ].map(stat => (
               <div key={stat.label} className="flex items-center gap-2.5">
@@ -163,20 +159,20 @@ export default function VoiceAgentApp() {
         <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-6">
           <TabsList className="grid w-full grid-cols-4 bg-muted/50 p-1 h-auto">
             {[
+              { value: 'live', label: 'Live Call', icon: Phone, count: null, highlight: true },
               { value: 'agents', label: 'Agents', icon: Bot, count: agents.length },
-              { value: 'live', label: 'Live Call', icon: Phone, count: null },
               { value: 'contacts', label: 'Contacts', icon: Users, count: contacts.length },
-              { value: 'logs', label: 'Call Logs', icon: History, count: callLogs.length },
+              { value: 'logs', label: 'History', icon: History, count: callLogs.length },
             ].map(tab => (
               <TabsTrigger
                 key={tab.value}
                 value={tab.value}
-                className="flex items-center gap-1.5 py-2.5 text-sm data-[state=active]:bg-white data-[state=active]:shadow-sm data-[state=active]:text-emerald-700 transition-all"
+                className={`flex items-center gap-1.5 py-2.5 text-sm transition-all ${tab.highlight ? 'data-[state=active]:bg-emerald-600 data-[state=active]:text-white data-[state=active]:shadow-sm' : 'data-[state=active]:bg-white data-[state=active]:shadow-sm data-[state=active]:text-emerald-700'}`}
               >
                 <tab.icon className="h-4 w-4" />
                 <span className="hidden sm:inline">{tab.label}</span>
                 {tab.count !== null && (
-                  <Badge variant="secondary" className="text-[10px] h-4 min-w-4 px-1 justify-center">
+                  <Badge variant="secondary" className="text-[10px] h-4 min-w-4 px-1 justify-center data-[state=active]:bg-white/20 data-[state=active]:text-inherit">
                     {tab.count}
                   </Badge>
                 )}
@@ -184,7 +180,16 @@ export default function VoiceAgentApp() {
             ))}
           </TabsList>
 
-          <TabsContent value="agents">
+          <TabsContent value="live" className="mt-2">
+            <LiveCall
+              agents={agents}
+              selectedAgentId={selectedAgentId}
+              setSelectedAgentId={setSelectedAgentId}
+              contacts={contacts}
+            />
+          </TabsContent>
+
+          <TabsContent value="agents" className="mt-2">
             <AgentBuilder
               agents={agents}
               setAgents={setAgents}
@@ -196,20 +201,11 @@ export default function VoiceAgentApp() {
             />
           </TabsContent>
 
-          <TabsContent value="live">
-            <LiveCall
-              agents={agents}
-              selectedAgentId={selectedAgentId}
-              setSelectedAgentId={setSelectedAgentId}
-              contacts={contacts}
-            />
-          </TabsContent>
-
-          <TabsContent value="contacts">
+          <TabsContent value="contacts" className="mt-2">
             <ContactsManager contacts={contacts} setContacts={setContacts} />
           </TabsContent>
 
-          <TabsContent value="logs">
+          <TabsContent value="logs" className="mt-2">
             <CallLogs callLogs={callLogs} />
           </TabsContent>
         </Tabs>
@@ -221,9 +217,9 @@ export default function VoiceAgentApp() {
           <div className="flex flex-col sm:flex-row items-center justify-between gap-2 text-xs text-muted-foreground">
             <p className="flex items-center gap-1.5">
               <Headphones className="h-3.5 w-3.5" />
-              VoiceAgent — AI-Powered Call Assistant
+              VoiceAgent — AI Call Answering System
             </p>
-            <p>Built with ASR + LLM + TTS pipeline for real-time voice conversations</p>
+            <p>Auto-answers calls, talks like customer care, transfers to your team</p>
           </div>
         </div>
       </footer>

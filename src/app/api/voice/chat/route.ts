@@ -20,40 +20,57 @@ export async function POST(req: NextRequest) {
       });
     }
 
+    // Get available contacts for transfer mention
+    const availableContacts = await db.contact.findMany({
+      where: { isActive: true },
+      select: { name: true, role: true, department: true },
+    });
+    const contactsList = availableContacts.map(c =>
+      `${c.name}${c.role ? ` (${c.role})` : ''}${c.department ? ` - ${c.department}` : ''}`
+    ).join(', ');
+
     const toneMap: Record<string, string> = {
-      professional: 'professional, courteous, and knowledgeable',
-      friendly: 'warm, friendly, and approachable',
-      formal: 'formal, precise, and business-like',
+      professional: 'professional, courteous, knowledgeable, and efficient',
+      friendly: 'warm, friendly, approachable, and helpful',
+      formal: 'formal, precise, business-like, and respectful',
     };
 
     const agentTone = agent?.tone || 'professional';
     const toneDesc = toneMap[agentTone] || toneMap.professional;
 
-    let systemPrompt = `You are a ${toneDesc} voice call assistant.`;
+    let systemPrompt = `You are a ${toneDesc} customer care call agent answering calls on behalf of a company.`;
 
     if (agent?.companyName) {
-      systemPrompt += ` You represent ${agent.companyName}.`;
+      systemPrompt += ` You work at ${agent.companyName}.`;
     }
 
     if (agent?.companyDesc) {
-      systemPrompt += ` About the company: ${agent.companyDesc}`;
+      systemPrompt += ` About the company/department: ${agent.companyDesc}`;
     }
 
     if (agent?.scripts && agent.scripts.length > 0) {
-      systemPrompt += `\n\nYour conversation script and key talking points:\n`;
+      systemPrompt += `\n\nYOUR SCRIPTS AND KEY INFORMATION:\n`;
       for (const script of agent.scripts) {
         systemPrompt += `\n- [${script.title}]: ${script.content}`;
       }
     }
 
-    systemPrompt += `\n\nIMPORTANT RULES:
-- Keep your responses concise and conversational, suitable for spoken dialogue.
-- Do not use markdown formatting, bullet points, or special characters - just natural speech.
-- If the caller asks to be transferred, mention that you can transfer them and list available contacts if known.
-- If you don't know something, politely say so and offer to help with what you can.
-- Speak as if you're having a real phone conversation - use natural fillers like "Sure," "Of course," "I'd be happy to help."
-- Keep each response under 3 sentences unless the caller asks for detailed information.
-- When the caller wants to speak to someone specific, acknowledge their request and confirm the transfer.`;
+    if (contactsList) {
+      systemPrompt += `\n\nAVAILABLE TEAM MEMBERS FOR TRANSFER: ${contactsList}`;
+    }
+
+    systemPrompt += `\n\nBEHAVIOR RULES - ACT LIKE A REAL CUSTOMER CARE AGENT:
+- You answer incoming calls automatically. Greet the caller warmly.
+- If the caller hasn't given their name, politely ask: "May I know who I'm speaking with?"
+- Understand the caller's purpose - ask clarifying questions if needed.
+- Provide helpful information based on your scripts. If you don't know something, say "Let me find that out for you" or "I'll make a note of that."
+- Use natural phone conversation language: "Sure," "Absolutely," "Of course," "I'd be happy to help with that," "Is there anything else I can help you with?"
+- Keep responses SHORT - 1 to 3 sentences maximum. This is a real phone call.
+- NEVER use markdown, bullet points, or special characters. Just plain spoken English.
+- If the caller wants to speak to someone else, say: "I can transfer you to [relevant person]. Let me connect you now."
+- If the caller wants to leave a message, offer to take it: "I'd be happy to take a message for them."
+- At the end of the conversation, always ask: "Is there anything else I can help you with today?"
+- You are the FIRST point of contact. Your job is to help, inform, or redirect.`;
 
     let history = conversationHistories.get(sessionId) || [
       { role: 'assistant', content: systemPrompt },
@@ -61,8 +78,8 @@ export async function POST(req: NextRequest) {
 
     history.push({ role: 'user', content: message });
 
-    if (history.length > 20) {
-      history = [history[0], ...history.slice(-(19))];
+    if (history.length > 24) {
+      history = [history[0], ...history.slice(-(23))];
     }
 
     const ZAI = (await import('z-ai-web-dev-sdk')).default;
@@ -73,17 +90,23 @@ export async function POST(req: NextRequest) {
       thinking: { type: 'disabled' },
     });
 
-    const aiResponse = completion.choices[0]?.message?.content || "I'm sorry, I didn't understand that. Could you please repeat?";
+    const aiResponse = completion.choices[0]?.message?.content || "I'm sorry, I didn't quite catch that. Could you please repeat?";
 
     history.push({ role: 'assistant', content: aiResponse });
     conversationHistories.set(sessionId, history);
 
-    const transferKeywords = ['transfer', 'speak to', 'talk to', 'connect me', 'someone else', 'manager', 'supervisor', 'another person'];
+    // Detect transfer intent
+    const transferKeywords = ['transfer', 'speak to', 'talk to', 'connect me', 'someone else', 'manager', 'supervisor', 'another person', 'real person', 'human', 'agent', 'live person'];
     const wantsTransfer = transferKeywords.some((kw) => message.toLowerCase().includes(kw));
+
+    // Detect end-of-call intent
+    const endKeywords = ['bye', 'goodbye', 'that\'s all', 'nothing else', 'hang up', 'thank you bye', 'no that\'s it'];
+    const wantsEnd = endKeywords.some((kw) => message.toLowerCase().includes(kw));
 
     return NextResponse.json({
       response: aiResponse,
       wantsTransfer,
+      wantsEnd,
       sessionId,
     });
   } catch (error) {
